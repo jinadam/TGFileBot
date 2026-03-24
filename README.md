@@ -30,7 +30,7 @@ TGBot 是一个 Telegram Bot 和 UserBot 结合的项目，旨在提供文件直
   "port": 8080,               // 程序运行的 HTTP 端口
   "id": 0,                    // Telegram API ID
   "hash": "",                 // Telegram API Hash
-  "site": "http://your_domain_or_ip", // 反代域名，用于生成直链
+  "site": "",                 // 反代域名，用于生成直链
   "phone": "",                // User Bot 身份对应的手机号 (带国际区号，例如: +8613800138000)
   "botToken": "",             // 接收/phone等命令的Bot Token
   "password": "",             // 访问/link的密码 (可选)
