@@ -189,9 +189,20 @@ func main() {
 		}()
 	}
 
+	if infos.BotClient != nil {
+		if _, err := infos.BotClient.SendMessage(infos.Conf.UserID, "程序已启动"); err != nil {
+			log.Printf("发送消息失败: %+v", err)
+		}
+	}
+
 	// 等待中断信号
 	sig := <-sigChan
 	log.Printf("收到信号: %v, 正在退出...", sig)
+	if infos.BotClient != nil {
+		if _, err := infos.BotClient.SendMessage(infos.Conf.UserID, "程序已退出"); err != nil {
+			log.Printf("发送消息失败: %+v", err)
+		}
+	}
 }
 
 func startUserBot() error {

@@ -5,7 +5,9 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"strings"
 	"sync"
+	"time"
 
 	mtproto "github.com/amarnathcjd/gogram"
 	"github.com/amarnathcjd/gogram/telegram"
@@ -30,6 +32,7 @@ type Reader struct {
 	Pos           int
 	ReadBytes     int64
 	Once          sync.Once
+	Mutex         sync.Mutex
 }
 
 func (reader *Reader) Close() error {
@@ -81,21 +84,22 @@ func (reader *Reader) startFetching() {
 			offset int64
 		}
 		type result struct {
-			index int
-			data  []byte
-			err   error
+			content []byte
+			index   int
+			err     error
 		}
 
 		tasks := make(chan task, workers)
 		results := make(chan result, workers)
 
 		// Start workers
-		for i := 0; i < workers; i++ {
+		for count := 0; count < workers; count++ {
 			go func() {
 				for t := range tasks {
-					data, err := reader.fetchChunk(t.offset)
+					content, err := reader.fetchChunk(t.offset)
 					select {
-					case results <- result{index: t.index, data: data, err: err}:
+					case results <- result{index: t.index, content: content, err: err}:
+						// 成功发送结果
 					case <-reader.Ctx.Done():
 						return
 					}
@@ -111,9 +115,10 @@ func (reader *Reader) startFetching() {
 		go func() {
 			defer close(tasks)
 			startOffset := reader.Start - (reader.Start % reader.ChunkSize)
-			for i := 0; i < totalChunks; i++ {
+			for count := 0; count < totalChunks; count++ {
 				select {
-				case tasks <- task{index: i, offset: startOffset + int64(i)*reader.ChunkSize}:
+				case tasks <- task{index: count, offset: startOffset + int64(count)*reader.ChunkSize}:
+					// 成功发送任务
 				case <-reader.Ctx.Done():
 					return
 				}
@@ -129,11 +134,12 @@ func (reader *Reader) startFetching() {
 				if res.err != nil {
 					select {
 					case reader.Errs <- res.err:
+						// 成功发送错误
 					default:
 					}
 					return
 				}
-				pendingResults[res.index] = res.data
+				pendingResults[res.index] = res.content
 				for {
 					content, ok := pendingResults[nextIndex]
 					if !ok {
@@ -169,6 +175,7 @@ func (reader *Reader) startFetching() {
 					if len(content) > 0 {
 						select {
 						case reader.Buffers <- content:
+							// 成功发送数据
 						case <-reader.Ctx.Done():
 							return
 						}
@@ -183,75 +190,86 @@ func (reader *Reader) startFetching() {
 	}()
 }
 
-func (reader *Reader) fetchChunk(offset int64) ([]byte, error) {
-	params := &telegram.UploadGetFileParams{
-		Location: reader.Location,
-		Offset:   offset,
-		Limit:    int32(reader.ChunkSize),
-	}
+func (reader *Reader) fetchChunk(offset int64) (content []byte, err error) {
+	for count := 0; count < 3; count++ {
+		reader.Mutex.Lock()
+		loc := reader.Location
+		targetDC := int(reader.DC)
+		reader.Mutex.Unlock()
 
-	var res any
-	var err error
-
-	// 获取并使用正确 DC 的 Sender
-	targetDC := int(reader.DC)
-
-	if targetDC != 0 {
-		infos.Mutex.Lock()
-		if infos.Senders == nil {
-			infos.Senders = make(map[int]*mtproto.MTProto)
+		params := &telegram.UploadGetFileParams{
+			Location: loc,
+			Offset:   offset,
+			Limit:    int32(reader.ChunkSize),
 		}
-		s, ok := infos.Senders[targetDC]
-		infos.Mutex.Unlock()
 
-		if ok {
-			res, err = s.MakeRequest(params)
-		} else {
-			// 尝试创建一个导出授权的 Sender
-			newSender, serr := reader.Client.CreateExportedSender(targetDC, false)
-			if serr == nil {
-				infos.Mutex.Lock()
-				infos.Senders[targetDC] = newSender
-				infos.Mutex.Unlock()
-				log.Printf("成功创建 DC %d 的导出 Sender", targetDC)
-				res, err = newSender.MakeRequest(params)
-			} else {
-				log.Printf("创建 DC %d 的导出 Sender 失败: %v, 将回退到主客户端", targetDC, serr)
-				res, err = reader.Client.UploadGetFile(params)
+		var res any
+
+		if targetDC != 0 {
+			infos.Mutex.Lock()
+			if infos.Senders == nil {
+				infos.Senders = make(map[int]*mtproto.MTProto)
 			}
-		}
-	} else {
-		res, err = reader.Client.UploadGetFile(params)
-	}
+			sender, ok := infos.Senders[targetDC]
+			infos.Mutex.Unlock()
 
-	if err != nil {
-		// Attempt refresh
-		if reader.ChannelID != 0 && reader.MessageID != 0 && reader.Cate != "bot" {
-			log.Printf("Chunk fetch failed, attempting refresh: %v", err)
-			ms, refreshErr := reader.Client.GetMessages(reader.ChannelID, &telegram.SearchOption{IDs: []int32{reader.MessageID}})
-			if refreshErr == nil && len(ms) > 0 {
-				src := ms[0]
-				if src.IsMedia() {
-					if loc, dc, _, _, locErr := telegram.GetFileLocation(src.Media(), telegram.FileLocationOptions{}); locErr == nil {
-						reader.Location = loc
-						reader.DC = dc
-						params.Location = loc
-						// 递归重试一次，或者至少在这里尝试重新调用 (简单起见这里直接报错，下个 chunk 会用新 DC)
-						return reader.fetchChunk(offset)
+			if ok {
+				res, err = sender.MakeRequest(params)
+			} else {
+				// 尝试创建一个导出授权的 Sender
+				newSender, serr := reader.Client.CreateExportedSender(targetDC, false)
+				if serr == nil {
+					infos.Mutex.Lock()
+					infos.Senders[targetDC] = newSender
+					infos.Mutex.Unlock()
+					log.Printf("成功创建 DC %d 的导出 Sender", targetDC)
+					res, err = newSender.MakeRequest(params)
+				} else {
+					log.Printf("创建 DC %d 的导出 Sender 失败: %v, 将回退到主客户端", targetDC, serr)
+					res, err = reader.Client.UploadGetFile(params)
+				}
+			}
+		} else {
+			res, err = reader.Client.UploadGetFile(params)
+		}
+
+		if err != nil {
+			// 如果是文件引用过期, 尝试通过消息 ID 重新获取位置
+			if (strings.Contains(err.Error(), "FILE_REFERENCE") || strings.Contains(err.Error(), "EXPIRED")) &&
+				reader.ChannelID != 0 && reader.MessageID != 0 {
+
+				log.Printf("获取分片失败提示引用过期 (%d/3), 尝试刷新消息: %v", count+1, err)
+				if ms, err := reader.Client.GetMessages(reader.ChannelID, &telegram.SearchOption{IDs: []int32{reader.MessageID}}); err == nil && len(ms) > 0 {
+					src := ms[0]
+					if src.IsMedia() {
+						if newLoc, newDC, _, _, err := telegram.GetFileLocation(src.Media(), telegram.FileLocationOptions{}); err == nil {
+							reader.Mutex.Lock()
+							reader.Location = newLoc
+							reader.DC = newDC
+							reader.Mutex.Unlock()
+							log.Printf("成功刷新文件引用, DC: %d", newDC)
+							time.Sleep(time.Second) // 稍作等待后重试一次
+							continue
+						}
+					}
+				} else {
+					if err != nil {
+						log.Printf("刷新消息位置失败: %v", err)
 					}
 				}
 			}
+
+			// 如果是其它错误或刷新失败, 也给一次重试机会（网络抖动等）
+			time.Sleep(time.Duration(count+1) * time.Second)
+			continue
 		}
-	}
 
-	if err != nil {
-		return nil, err
+		if obj, ok := res.(*telegram.UploadFileObj); ok {
+			return obj.Bytes, nil
+		}
+		return nil, fmt.Errorf("未知的响应类型: %T", res)
 	}
-
-	if obj, ok := res.(*telegram.UploadFileObj); ok {
-		return obj.Bytes, nil
-	}
-	return nil, fmt.Errorf("unexpected response type: %T", res)
+	return nil, err
 }
 
 func (reader *Reader) Read(content []byte) (num int, err error) {
