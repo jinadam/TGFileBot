@@ -1,8 +1,9 @@
 package main
 
 import (
-	"encoding/json" // 处理 JSON 数据
-	"errors"
+	"context"       // 用于上下文和超时控制
+	"encoding/json" // 用于处理 JSON 数据
+	"errors"        // 用于处理错误
 	"flag"          // 用于处理命令行参数
 	"fmt"           // 用于格式化字符串
 	"html"          // 用于转义 HTML 字符
@@ -180,36 +181,35 @@ func main() {
 			log.Printf("UserBot 启动失败: %+v", err)
 			sigChan <- os.Interrupt
 		}
-	} else {
-		// 设置 HTTP 流式传输路由
-		http.HandleFunc("/stream/", handleStream)
-		http.HandleFunc("/link", handleLink)
-		http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-			if r.URL.Path != "/" {
-				http.NotFound(w, r)
-				return
-			}
-			w.Header().Set("Content-Type", "application/json; charset=utf-8")
-			resp := map[string]any{
-				"message": "服务器正在运行。",
-				"ok":      true,
-				"uptime":  handleTime(uint64(time.Since(startTime).Seconds())),
-				"version": version,
-			}
-			err = json.NewEncoder(w).Encode(resp)
-			if err != nil {
-				log.Printf("发送网页失败: %+v", err)
-			}
-		})
-		// 在协程中启动 HTTP 服务
-		go func() {
-			log.Printf("HTTP 服务运行在 %d 端口", infos.Conf.Port)
-			if err := http.ListenAndServe(fmt.Sprintf(":%d", infos.Conf.Port), nil); err != nil {
-				log.Printf("HTTP 服务启动失败: %+v", err)
-				sigChan <- os.Interrupt
-			}
-		}()
 	}
+	// 设置 HTTP 流式传输路由
+	http.HandleFunc("/stream/", handleStream)
+	http.HandleFunc("/link", handleLink)
+	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/" {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		resp := map[string]any{
+			"message": "服务器正在运行。",
+			"ok":      true,
+			"uptime":  handleTime(uint64(time.Since(startTime).Seconds())),
+			"version": version,
+		}
+		err = json.NewEncoder(w).Encode(resp)
+		if err != nil {
+			log.Printf("发送网页失败: %+v", err)
+		}
+	})
+	// 在协程中启动 HTTP 服务
+	go func() {
+		log.Printf("HTTP 服务运行在 %d 端口", infos.Conf.Port)
+		if err := http.ListenAndServe(fmt.Sprintf(":%d", infos.Conf.Port), nil); err != nil {
+			log.Printf("HTTP 服务启动失败: %+v", err)
+			sigChan <- os.Interrupt
+		}
+	}()
 
 	if infos.BotClient != nil {
 		if _, err := infos.BotClient.SendMessage(infos.Conf.UserID, "程序已启动"); err != nil {
@@ -267,14 +267,8 @@ func startUserBot() error {
 	}
 
 	if is, err := client.IsAuthorized(); !is {
-		if err != nil {
-			log.Printf("UserBot授权失败: %+v", err)
-			return nil
-		} else {
-			log.Printf("UserBot未授权. 请重新发送 /phone 手机号")
-			return nil
-		}
-
+		log.Printf("UserBot未授权: %v", err)
+		return handlePhone()
 	}
 	return initUserBot()
 }
@@ -289,10 +283,15 @@ func initUserBot() error {
 	log.Printf("UserBot 登录成功: %s", me.Username)
 
 	// 预先取一次对话列表（缓存 AccessHash）, 解决长时间闲置后无法 ResolvePeer 的问题
-	log.Printf("UserBot 正在缓存对话列表...")
-	if _, err := infos.UserClient.GetDialogs(&telegram.DialogOptions{Limit: 100}); err != nil {
-		log.Printf("UserBot 缓存对话列表失败: %v", err)
-	}
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		log.Print("UserBot 正在缓存对话列表...")
+		if _, err := infos.UserClient.GetDialogs(&telegram.DialogOptions{Limit: 100, Context: ctx}); err != nil {
+			log.Printf("UserBot 缓存对话列表失败: %v", err)
+		}
+		log.Print("UserBot 对话列表缓存完成")
+	}()
 
 	infos.UserClient.On(telegram.OnMessage, handleBotCommand)
 	return nil
@@ -302,9 +301,13 @@ func handlePhone() error {
 	for count := 0; count < 3; count++ {
 		sendCode, err := infos.UserClient.AuthSendCode(infos.Conf.Phone, infos.Conf.AppID, infos.Conf.AppHash, &telegram.CodeSettings{})
 		if err != nil {
-			if strings.Contains(err.Error(), "DC_MIGRATE") {
-				log.Printf("AuthSendCode 触发 DC_MIGRATE, 清除 session 后重建 UserClient 重试 (%d/3): %v", count+1, err)
-				infos.UserClient.SwitchDc(extractDC(err))
+			// 处理 DC_MIGRATE 和 PHONE_MIGRATE 错误
+			if strings.Contains(err.Error(), "DC_MIGRATE") || strings.Contains(err.Error(), "PHONE_MIGRATE") {
+				log.Printf("AuthSendCode 触发 DC/PHONE_MIGRATE, 清除 session 后重建 UserClient 重试 (%d/3): %v", count+1, err)
+				newDC := extractDC(err)
+				if err := infos.UserClient.SwitchDc(newDC); err != nil {
+					log.Printf("切换 DC 失败: %v", err)
+				}
 				continue
 			}
 			if _, err := infos.BotClient.SendMessage(infos.Conf.UserID, "发送验证码失败: "+err.Error()); err != nil {
@@ -436,16 +439,20 @@ func handleBotCommand(m *telegram.NewMessage) error {
 		}
 
 		if infos.UserClient == nil {
-			err := startUserBot()
-			if err != nil {
-				_, err := m.Reply("UserBot 启动失败: " + err.Error())
+			return startUserBot()
+			/*
 				if err != nil {
-					log.Printf("发送消息失败: %+v", err)
+					_, err := m.Reply("UserBot 启动失败: " + err.Error())
+					if err != nil {
+						log.Printf("发送消息失败: %+v", err)
+					}
+					return err
 				}
-				return err
-			}
+			*/
+		} else {
+			return handlePhone()
 		}
-		return handlePhone()
+
 	case strings.HasPrefix(text, "/code"):
 		if !isAdmin(m.SenderID()) {
 			log.Printf("收到非管理员消息: %d", m.SenderID())
@@ -896,11 +903,21 @@ func cleanFiles(realm CleanRealm) {
 }
 
 func extractDC(err error) int {
-	msg := err.Error()
-	if strings.Contains(msg, "MIGRATE") {
-		parts := strings.Split(msg, "_")
-		if len(parts) > 0 {
-			if dc, err := strconv.Atoi(parts[len(parts)-1]); err == nil {
+	src := strings.ToUpper(err.Error())
+	switch {
+	case strings.Contains(src, "DC_MIGRATE"):
+		re := regexp.MustCompile(`DC.*?(\d+).`)
+		match := re.FindStringSubmatch(src)
+		if len(match) == 2 {
+			if dc, err := strconv.Atoi(match[1]); err == nil {
+				return dc
+			}
+		}
+	case strings.Contains(src, "PHONE_MIGRATE"):
+		re := regexp.MustCompile(`DC.*?(\d+).`)
+		match := re.FindStringSubmatch(src)
+		if len(match) == 2 {
+			if dc, err := strconv.Atoi(match[1]); err == nil {
 				return dc
 			}
 		}

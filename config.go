@@ -10,14 +10,14 @@ import (
 
 // Config 结构体定义了程序所需的配置项
 type Conf struct {
-	Port      int     `json:"port"`               // 程序运行的 HTTP 端口
-	AppID     int32   `json:"id"`                 // Telegram API ID
 	AppHash   string  `json:"hash"`               // Telegram API Hash
 	Site      string  `json:"site"`               // 反代域名
 	Phone     string  `json:"phone"`              // User Bot 身份对应的手机号
 	BotToken  string  `json:"botToken"`           // 接收/phone等命令的Bot Token
 	Password  string  `json:"password,omitempty"` // 访问/link的密码
+	Port      int     `json:"port"`               // 程序运行的 HTTP 端口
 	Workers   int     `json:"workers"`            // 并发数
+	AppID     int32   `json:"id"`                 // Telegram API ID
 	UserID    int64   `json:"userID"`             // User Bot 身份对应的账号ID
 	ChannelID int64   `json:"channelID"`          // 频道ID
 	AdminIDs  []int64 `json:"adminIDs,omitempty"` // 支持多管理员的ID列表
