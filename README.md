@@ -81,18 +81,23 @@ go run main.go -files 自定义目录
 
 #### Docker 部署
 
-1. 构建 Docker 镜像:
+1. 直接拉取 GitHub Container Registry 镜像:
    ```bash
-   docker build -t tgfilebot .
+   docker pull ghcr.io/lm317379829/tgfilebot:latest
    ```
 
 2. 运行 Docker 容器:
    ```bash
-   docker run -d --name tgfilebot -p 9981:8080 -v $(pwd)/files:/root/files tgfilebot
+   docker run -d --name tgfilebot -p 9981:8080 -v $(pwd)/files:/root/files ghcr.io/lm317379829/tgfilebot:latest
    ```
    或者使用 `docker-compose.yml`:
    ```bash
    docker-compose up -d
+   ```
+
+3. 如需本地自行构建镜像:
+   ```bash
+   docker build -t tgfilebot .
    ```
 
 ## 使用方法

@@ -2,10 +2,7 @@ version: '3.8'
 
 services:
   tgfilebot:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    image: lm317379829/tgfilebot:latest
+    image: ghcr.io/lm317379829/tgfilebot:latest
     container_name: tgfilebot
     restart: unless-stopped
     ports:
