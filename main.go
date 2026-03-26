@@ -340,7 +340,7 @@ func handleBotCommand(m *telegram.NewMessage) error {
 	text := strings.TrimSpace(m.Text())
 
 	switch {
-	case strings.HasPrefix(text, "/allow "):
+	case strings.HasPrefix(text, "/allow"):
 		if !isAdmin(m.SenderID()) {
 			log.Printf("收到非管理员消息: %d", m.SenderID())
 			if _, err := m.Reply("你没有使用此机器人的权限"); err != nil {
@@ -348,22 +348,24 @@ func handleBotCommand(m *telegram.NewMessage) error {
 			}
 			return nil
 		}
-		whiteID, err := strconv.ParseInt(strings.TrimSpace(strings.TrimPrefix(text, "/allow ")), 10, 64)
+		whiteID, err := strconv.ParseInt(strings.TrimSpace(strings.TrimPrefix(text, "/allow")), 10, 64)
 		if err != nil {
 			if _, err := m.Reply("添加白名单失败: " + err.Error()); err != nil {
 				log.Printf("发送消息失败: %+v", err)
 			}
 			return err
 		}
-		infos.Mutex.Lock()
-		infos.Conf.WhiteIDs = append(infos.Conf.WhiteIDs, whiteID)
-		infos.HasNew = true
-		infos.Mutex.Unlock()
-		if _, err := m.Reply(fmt.Sprintf("添加白名单成功: %d", whiteID)); err != nil {
-			log.Printf("发送消息失败: %+v", err)
+		if whiteID != 0 {
+			infos.Mutex.Lock()
+			infos.Conf.WhiteIDs = append(infos.Conf.WhiteIDs, whiteID)
+			infos.HasNew = true
+			infos.Mutex.Unlock()
+			if _, err := m.Reply(fmt.Sprintf("添加白名单成功: %d", whiteID)); err != nil {
+				log.Printf("发送消息失败: %+v", err)
+			}
 		}
 		return nil
-	case strings.HasPrefix(text, "/disallow "):
+	case strings.HasPrefix(text, "/disallow"):
 		if !isAdmin(m.SenderID()) {
 			log.Printf("收到非管理员消息: %d", m.SenderID())
 			if _, err := m.Reply("你没有使用此机器人的权限"); err != nil {
@@ -371,34 +373,36 @@ func handleBotCommand(m *telegram.NewMessage) error {
 			}
 			return nil
 		}
-		whiteID, err := strconv.ParseInt(strings.TrimSpace(strings.TrimPrefix(text, "/disallow ")), 10, 64)
+		whiteID, err := strconv.ParseInt(strings.TrimSpace(strings.TrimPrefix(text, "/disallow")), 10, 64)
 		if err != nil {
 			if _, err := m.Reply("移除白名单失败: " + err.Error()); err != nil {
 				log.Printf("发送消息失败: %+v", err)
 			}
 			return err
 		}
-		infos.Mutex.Lock()
-		oldLen := len(infos.Conf.WhiteIDs)
-		infos.Conf.WhiteIDs = slices.DeleteFunc(infos.Conf.WhiteIDs, func(num int64) bool {
-			return num == whiteID
-		})
-		newLen := len(infos.Conf.WhiteIDs)
-		infos.Mutex.Unlock()
-		if oldLen > newLen {
+		if whiteID != 0 {
 			infos.Mutex.Lock()
-			infos.HasNew = true
+			oldLen := len(infos.Conf.WhiteIDs)
+			infos.Conf.WhiteIDs = slices.DeleteFunc(infos.Conf.WhiteIDs, func(num int64) bool {
+				return num == whiteID
+			})
+			newLen := len(infos.Conf.WhiteIDs)
 			infos.Mutex.Unlock()
-			if _, err := m.Reply(fmt.Sprintf("移除白名单成功: %d", whiteID)); err != nil {
-				log.Printf("发送消息失败: %+v", err)
-			}
-		} else {
-			if _, err := m.Reply(fmt.Sprintf("用户 %d 不在白名单中", whiteID)); err != nil {
-				log.Printf("发送消息失败: %+v", err)
+			if oldLen > newLen {
+				infos.Mutex.Lock()
+				infos.HasNew = true
+				infos.Mutex.Unlock()
+				if _, err := m.Reply(fmt.Sprintf("移除白名单成功: %d", whiteID)); err != nil {
+					log.Printf("发送消息失败: %+v", err)
+				}
+			} else {
+				if _, err := m.Reply(fmt.Sprintf("用户 %d 不在白名单中", whiteID)); err != nil {
+					log.Printf("发送消息失败: %+v", err)
+				}
 			}
 		}
 		return nil
-	case strings.HasPrefix(text, "/phone "):
+	case strings.HasPrefix(text, "/phone"):
 		if !isAdmin(m.SenderID()) {
 			log.Printf("收到非管理员消息: %d", m.SenderID())
 			if _, err := m.Reply("你没有使用此机器人的权限"); err != nil {
@@ -406,7 +410,7 @@ func handleBotCommand(m *telegram.NewMessage) error {
 			}
 			return nil
 		}
-		content := strings.TrimSpace(strings.TrimPrefix(text, "/phone "))
+		content := strings.TrimSpace(strings.TrimPrefix(text, "/phone"))
 		if content == "" {
 			if _, err := m.Reply("手机不能为空"); err != nil {
 				log.Printf("发送消息失败: %+v", err)
@@ -438,7 +442,7 @@ func handleBotCommand(m *telegram.NewMessage) error {
 			}
 		}
 		return handlePhone()
-	case strings.HasPrefix(text, "/code "):
+	case strings.HasPrefix(text, "/code"):
 		if !isAdmin(m.SenderID()) {
 			log.Printf("收到非管理员消息: %d", m.SenderID())
 			if _, err := m.Reply("你没有使用此机器人的权限"); err != nil {
@@ -453,7 +457,14 @@ func handleBotCommand(m *telegram.NewMessage) error {
 			return nil
 		}
 
-		code := strings.TrimSpace(strings.TrimPrefix(text, "/code "))
+		code := strings.TrimSpace(strings.TrimPrefix(text, "/code"))
+		if code == "" {
+			if _, err := m.Reply("验证码不能为空"); err != nil {
+				log.Printf("发送消息失败: %+v", err)
+			}
+			return nil
+		}
+
 		if _, err := m.Reply("正在登录..."); err != nil {
 			log.Printf("发送消息失败: %+v", err)
 		}
