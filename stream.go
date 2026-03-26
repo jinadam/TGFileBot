@@ -35,6 +35,7 @@ type Reader struct {
 	Version       atomic.Int64
 	Once          sync.Once
 	Mutex         sync.Mutex
+	LastRefresh   time.Time // 记录上次刷新时间，避免刷新过于频繁
 }
 
 func (reader *Reader) Close() error {
@@ -237,11 +238,13 @@ func (reader *Reader) fetchChunk(offset int64) (content []byte, err error) {
 		}
 
 		if err != nil {
-			// 如果是文件引用过期, 通过 singleflight 合并并发刷新请求
+			// 如果是文件引用过期, 通过版本号合并并发刷新请求
 			if (strings.Contains(err.Error(), "FILE_REFERENCE") || strings.Contains(err.Error(), "EXPIRED")) &&
 				reader.ChannelID != 0 && reader.MessageID != 0 {
 				log.Printf("获取分片失败提示引用过期 (%d/3), 尝试刷新消息: %v", count+1, err)
 				if reader.refresh(version) {
+					// 刷新成功后, 等2秒让 Telegram 服务端真正生效新的 file reference
+					time.Sleep(2 * time.Second)
 					continue
 				}
 			}
@@ -265,7 +268,23 @@ func (reader *Reader) refresh(version int64) bool {
 
 	currentVersion := reader.Version.Load()
 	if currentVersion > version {
+		// 其他 worker 已刷新, 但需要检查该刷新是否足够新
+		// 如果刷新发生在3秒以内, 说明刚刷新过但可能还没生效, 等一下再用
+		if time.Since(reader.LastRefresh) < 3*time.Second {
+			log.Printf("其他 worker 刚刷新过文件引用 (版本 %d -> %d, %v前), 等待生效后复用",
+				version, currentVersion, time.Since(reader.LastRefresh).Round(time.Millisecond))
+			// 在 mutex 外面等待, 释放锁让其他人也能读
+			return true
+		}
 		log.Printf("其他 worker 已刷新文件引用 (版本 %d -> %d), 直接复用", version, currentVersion)
+		return true
+	}
+
+	// 距上次刷新不足 3 秒，不再重复刷新（避免 Telegram 返回相同的过期引用）
+	if !reader.LastRefresh.IsZero() && time.Since(reader.LastRefresh) < 3*time.Second {
+		log.Printf("距离上次刷新仅 %v, 跳过本次刷新以避免获取到相同的过期引用",
+			time.Since(reader.LastRefresh).Round(time.Millisecond))
+		// 释放锁后等待一段时间再重试
 		return true
 	}
 
@@ -295,6 +314,7 @@ func (reader *Reader) refresh(version int64) bool {
 	reader.Location = newLoc
 	reader.DC = newDC
 	reader.Version.Add(1)
+	reader.LastRefresh = time.Now()
 	log.Printf("成功刷新文件引用, DC: %d, 新位置: %+v", newDC, newLoc)
 	return true
 }

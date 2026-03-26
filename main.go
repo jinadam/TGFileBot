@@ -40,6 +40,7 @@ type Infos struct {
 	HasNew     bool                     // 是否有新配置
 	FilesPath  string                   // 配置目录路径
 	UserHash   string                   // 验证码所需的登录Hash
+	BotID      int64                    // Bot 的 ID
 	Senders    map[int]*mtproto.MTProto // 独立的 Bot 客户端
 }
 
@@ -57,6 +58,15 @@ func isAdmin(id int64) bool {
 		}
 	}
 	return false
+}
+
+func isWhiteList(id int64) bool {
+	for _, whiteID := range infos.Conf.WhiteIDs {
+		if id == whiteID {
+			return true
+		}
+	}
+	return isAdmin(id) || id == infos.BotID
 }
 
 func main() {
@@ -99,8 +109,16 @@ func main() {
 	}
 
 	// 如果 AppID 不为空，清理非当前 AppID 的 bot 缓存文件
-	if infos.Conf.AppID != 0 {
-		cleanFiles(CleanRealm{ID: strconv.FormatInt(int64(infos.Conf.AppID), 10), Cate: "bot", Realm: "cache", Filter: true})
+	if infos.Conf.BotToken != "" {
+		parts := strings.Split(infos.Conf.BotToken, ":")
+		botID := strings.TrimSpace(parts[0])
+		cleanFiles(CleanRealm{ID: botID, Cate: "bot", Realm: "cache", Filter: true})
+		infos.Mutex.Lock()
+		infos.BotID, err = strconv.ParseInt(botID, 10, 64)
+		if err != nil {
+			log.Printf("解析 BotID 失败: %+v", err)
+		}
+		infos.Mutex.Unlock()
 	}
 
 	// 如果配置文件中包含 BotToken，优先让 Bot 上线用来交互与监听管理指令
@@ -156,8 +174,8 @@ func main() {
 	err = startUserBot()
 	if err != nil {
 		cleanFiles(CleanRealm{Cate: "user", Realm: "session"})
-		if infos.Conf.Phone != "" {
-			cleanFiles(CleanRealm{ID: infos.Conf.Phone, Cate: "user", Realm: "cache", Filter: false})
+		if infos.Conf.Phone != "" && infos.Conf.UserID != 0 {
+			cleanFiles(CleanRealm{Cate: "user", Realm: "cache", Filter: false})
 		}
 		if infos.BotClient != nil {
 			if _, err := infos.BotClient.SendMessage(infos.Conf.UserID, "UserBot启动失败, 程序已退出."); err != nil {
@@ -225,7 +243,9 @@ func startUserBot() error {
 		return nil
 	}
 
-	cleanFiles(CleanRealm{ID: infos.Conf.Phone, Cate: "user", Realm: "cache", Filter: true})
+	if infos.Conf.Phone != "" && infos.Conf.UserID != 0 {
+		cleanFiles(CleanRealm{ID: strconv.FormatInt(infos.Conf.UserID, 10), Cate: "user", Realm: "cache", Filter: true})
+	}
 
 	userConf := telegram.ClientConfig{
 		AppID:        infos.Conf.AppID,
@@ -280,7 +300,7 @@ func initUserBot() error {
 		log.Printf("UserBot 缓存对话列表失败: %v", err)
 	}
 
-	infos.UserClient.On(telegram.OnMessage, handleMess)
+	infos.UserClient.On(telegram.OnMessage, handleBotCommand)
 	return nil
 }
 
@@ -311,17 +331,21 @@ func handlePhone() error {
 }
 
 func handleBotCommand(m *telegram.NewMessage) error {
-	text := strings.TrimSpace(m.Text())
-	if !isAdmin(m.SenderID()) {
-		log.Printf("收到非管理员消息: %d", m.SenderID())
-		if _, err := m.Reply("你没有使用此机器人的权限"); err != nil {
-			log.Printf("发送消息失败: %+v", err)
-		}
+	if m.Sender.ID == infos.BotID {
 		return nil
 	}
 
+	text := strings.TrimSpace(m.Text())
+
 	switch {
 	case strings.HasPrefix(text, "/allow "):
+		if !isAdmin(m.SenderID()) {
+			log.Printf("收到非管理员消息: %d", m.SenderID())
+			if _, err := m.Reply("你没有使用此机器人的权限"); err != nil {
+				log.Printf("发送消息失败: %+v", err)
+			}
+			return nil
+		}
 		whiteID, err := strconv.ParseInt(strings.TrimSpace(strings.TrimPrefix(text, "/allow ")), 10, 64)
 		if err != nil {
 			if _, err := m.Reply("添加白名单失败: " + err.Error()); err != nil {
@@ -338,6 +362,13 @@ func handleBotCommand(m *telegram.NewMessage) error {
 		}
 		return nil
 	case strings.HasPrefix(text, "/disallow "):
+		if !isAdmin(m.SenderID()) {
+			log.Printf("收到非管理员消息: %d", m.SenderID())
+			if _, err := m.Reply("你没有使用此机器人的权限"); err != nil {
+				log.Printf("发送消息失败: %+v", err)
+			}
+			return nil
+		}
 		whiteID, err := strconv.ParseInt(strings.TrimSpace(strings.TrimPrefix(text, "/disallow ")), 10, 64)
 		if err != nil {
 			if _, err := m.Reply("移除白名单失败: " + err.Error()); err != nil {
@@ -366,6 +397,13 @@ func handleBotCommand(m *telegram.NewMessage) error {
 		}
 		return nil
 	case strings.HasPrefix(text, "/phone "):
+		if !isAdmin(m.SenderID()) {
+			log.Printf("收到非管理员消息: %d", m.SenderID())
+			if _, err := m.Reply("你没有使用此机器人的权限"); err != nil {
+				log.Printf("发送消息失败: %+v", err)
+			}
+			return nil
+		}
 		content := strings.TrimSpace(strings.TrimPrefix(text, "/phone "))
 		if content == "" {
 			if _, err := m.Reply("手机不能为空"); err != nil {
@@ -399,6 +437,13 @@ func handleBotCommand(m *telegram.NewMessage) error {
 		}
 		return handlePhone()
 	case strings.HasPrefix(text, "/code "):
+		if !isAdmin(m.SenderID()) {
+			log.Printf("收到非管理员消息: %d", m.SenderID())
+			if _, err := m.Reply("你没有使用此机器人的权限"); err != nil {
+				log.Printf("发送消息失败: %+v", err)
+			}
+			return nil
+		}
 		if infos.Conf.Phone == "" || infos.UserHash == "" {
 			if _, err := m.Reply("请先发送 /phone 手机号"); err != nil {
 				log.Printf("发送消息失败: %+v", err)
@@ -436,6 +481,13 @@ func handleBotCommand(m *telegram.NewMessage) error {
 		}
 		return initUserBot()
 	default:
+		if !isWhiteList(m.SenderID()) {
+			log.Printf("收到非白名单消息: %d", m.SenderID())
+			if _, err := m.Reply("你没有使用此机器人的权限"); err != nil {
+				log.Printf("发送消息失败: %+v", err)
+			}
+			return nil
+		}
 		return handleMess(m)
 	}
 }
@@ -445,95 +497,33 @@ func handleMess(m *telegram.NewMessage) error {
 	// 如果是用户发送或转发来的、带有图片/文档/视频的消息，直接生成直链
 	if m.IsMedia() && (m.Photo() != nil || m.Document() != nil || m.Video() != nil) {
 		link := fmt.Sprintf("%s/stream?cid=%d&mid=%d&cate=bot", strings.TrimSuffix(infos.Conf.Site, "/"), m.ChatID(), m.ID)
-		return sendLink(link)
+		return sendLink(m, link)
 	}
 
-	text := m.Text() // 获取文本内容
-	if text == "" {
-		log.Printf("消息为空")
+	src := strings.TrimSpace(m.Text())
+	if src == "" {
+		if _, err := m.Reply("消息为空"); err != nil {
+			log.Printf("发送消息失败: %+v", err)
+		}
 		return nil
 	}
 
 	// 编译正则表达式匹配 Telegram 链接格式
 	// 匹配格式如：t.me/c/12345/678 或 t.me/username/678
 	re := regexp.MustCompile(`t\.me\/(c\/(\d+)|([a-zA-Z0-9_]+))\/(\d+)(?:\?.*comment=(\d+))?`)
-	matches := re.FindAllStringSubmatch(text, -1)
+	matches := re.FindAllStringSubmatch(src, -1)
 
-	// 遍历所有匹配到的链接
-	for _, match := range matches {
-		var cid any   // 用于 ResolvePeer 的标识项（可以是用户名或 chatID）
-		var mid int32 // 消息 ID
-
-		// 解析逻辑
-		if match[2] != "" {
-			// 如果是 c/(\d+)，代表私有频道链接，需要给 ID 补充前缀 -100
-			value, err := strconv.ParseInt("-100"+match[2], 10, 64)
-			if err != nil {
-				if _, err := m.Reply("解析频道ID失败"); err != nil {
-					log.Printf("发送消息失败: %+v", err)
-				}
-				continue
-			}
-			cid = value
-		} else {
-			// 否则匹配的是公开频道的 username
-			cid = match[3]
+	if len(matches) == 0 {
+		log.Printf("收到非链接消息: %s", src)
+		if _, err := m.Reply("收到非链接消息"); err != nil {
+			log.Printf("发送消息失败: %+v", err)
 		}
+		return nil
+	}
 
-		// 解析消息偏移 ID
-		value, err := strconv.ParseInt(match[4], 10, 32)
-		if err != nil {
-			if _, err := m.Reply("解析消息ID失败"); err != nil {
-				log.Printf("发送消息失败: %+v", err)
-			}
-			continue
-		}
-		mid = int32(value)
-
-		// 使用 GetMessages 尝试获取目标消息，gogram 会自动映射 peer 为 InputPeer
-		ms, err := infos.UserClient.GetMessages(cid, &telegram.SearchOption{IDs: []int32{mid}})
-		if err != nil || len(ms) == 0 {
-			if _, err := m.Reply("找不到指定的消息, 或者 User Bot 没有权限(请确认已加入频道)"); err != nil {
-				log.Printf("发送消息失败: %+v", err)
-			}
-			continue
-		}
-
-		src := ms[0] // 获取第一条目标消息
-		if match[5] != "" {
-			commentID, err := strconv.ParseInt(match[5], 10, 32)
-			if err != nil {
-				continue
-			}
-
-			// a. 检查该消息是否有讨论功能并获取讨论组 ID
-			// gogram 的 NewMessage 对象通过 .Message.Replies 获取元数据
-			if src.Message.Replies != nil && src.Message.Replies.ChannelID != 0 {
-				discussionID := src.Message.Replies.ChannelID // 讨论组的 ID
-
-				// b. 从讨论组中获取真正的评论消息
-				commentMs, err := infos.UserClient.GetMessages(discussionID, &telegram.SearchOption{IDs: []int32{int32(commentID)}})
-				if err == nil && len(commentMs) > 0 {
-					src = commentMs[0] // 将目标消息切换为评论消息
-					src.ID = int32(commentID)
-					src.Chat.ID = discussionID
-				}
-			}
-		}
-
-		// 判断该消息是否包含可下载的媒体内容
-		if !src.IsMedia() || (src.Photo() == nil && src.Document() == nil && src.Video() == nil) {
-			if _, err := m.Reply("链接对应的消息不包含媒体文件"); err != nil {
-				log.Printf("发送消息失败: %+v", err)
-			}
-			continue
-		}
-
-		// 为媒体文件构造下载直链
-		link := fmt.Sprintf("%s/stream?cid=%v&mid=%d&cate=user", strings.TrimSuffix(infos.Conf.Site, "/"), src.ChatID(), src.ID)
-		err = sendLink(link)
-		if err != nil {
-			log.Printf("推送直链失败: %+v", err)
+	for _, link := range hackLink(matches, m) {
+		if err := sendLink(m, link); err != nil {
+			log.Printf("发送消息失败: %+v", err)
 		}
 	}
 	return nil
@@ -694,16 +684,27 @@ func handleLink(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "无效的密码", http.StatusUnauthorized)
 		return
 	}
-	link := params.Get("link")
-	if link == "" || !strings.HasPrefix(link, "http") {
+
+	src := params.Get("link")
+	if src == "" || !strings.HasPrefix(src, "http") {
 		http.Error(w, "无效的链接", http.StatusBadRequest)
 		return
 	}
+
 	// 编译正则表达式匹配 Telegram 链接格式
 	// 匹配格式如：t.me/c/12345/678 或 t.me/username/678
 	re := regexp.MustCompile(`t\.me\/(c\/(\d+)|([a-zA-Z0-9_]+))\/(\d+)(?:\?.*comment=(\d+))?`)
-	matches := re.FindAllStringSubmatch(link, -1)
+	matches := re.FindAllStringSubmatch(src, -1)
 
+	for _, link := range hackLink(matches, nil) {
+		http.Redirect(w, r, link, http.StatusFound)
+		return
+	}
+
+	http.Error(w, "未找到可下载的媒体", http.StatusNotFound)
+}
+
+func hackLink(matches [][]string, m *telegram.NewMessage) (links []string) {
 	// 遍历所有匹配到的链接
 	for _, match := range matches {
 		var cid any   // 用于 ResolvePeer 的标识项（可以是用户名或 chatID）
@@ -715,6 +716,11 @@ func handleLink(w http.ResponseWriter, r *http.Request) {
 			value, err := strconv.ParseInt("-100"+match[2], 10, 64)
 			if err != nil {
 				log.Printf("解析频道ID失败: %+v", err)
+				if m != nil {
+					if _, err := m.Reply("解析频道ID失败"); err != nil {
+						log.Printf("发送消息失败: %+v", err)
+					}
+				}
 				continue
 			}
 			cid = value
@@ -727,6 +733,11 @@ func handleLink(w http.ResponseWriter, r *http.Request) {
 		value, err := strconv.ParseInt(match[4], 10, 32)
 		if err != nil {
 			log.Printf("解析消息ID失败: %+v", err)
+			if m != nil {
+				if _, err := m.Reply("解析消息ID失败"); err != nil {
+					log.Printf("发送消息失败: %+v", err)
+				}
+			}
 			continue
 		}
 		mid = int32(value)
@@ -735,6 +746,11 @@ func handleLink(w http.ResponseWriter, r *http.Request) {
 		ms, err := infos.UserClient.GetMessages(cid, &telegram.SearchOption{IDs: []int32{mid}})
 		if err != nil || len(ms) == 0 {
 			log.Printf("获取消息失败: cid=%d, mid=%d, err=%v, count=%d", cid, mid, err, len(ms))
+			if m != nil {
+				if _, err := m.Reply("获取消息失败"); err != nil {
+					log.Printf("发送消息失败: %+v", err)
+				}
+			}
 			continue
 		}
 
@@ -762,18 +778,24 @@ func handleLink(w http.ResponseWriter, r *http.Request) {
 		// 判断该消息是否包含可下载的媒体内容
 		if !src.IsMedia() || (src.Photo() == nil && src.Document() == nil && src.Video() == nil) {
 			log.Printf("消息不包含媒体: cid=%d, mid=%d", cid, mid)
+			if m != nil {
+				if _, err := m.Reply("消息不包含媒体"); err != nil {
+					log.Printf("发送消息失败: %+v", err)
+				}
+			}
 			continue
 		}
 
 		// 为媒体文件构造下载直链
 		if infos.Conf.Password != "" {
-			link = fmt.Sprintf("%s/stream?cid=%v&mid=%d&key=%s&cate=user", strings.TrimSuffix(infos.Conf.Site, "/"), src.ChatID(), src.ID, infos.Conf.Password)
+			link := fmt.Sprintf("%s/stream?cid=%v&mid=%d&key=%s&cate=user", strings.TrimSuffix(infos.Conf.Site, "/"), src.ChatID(), src.ID, infos.Conf.Password)
+			links = append(links, link)
 		} else {
-			link = fmt.Sprintf("%s/stream?cid=%v&mid=%d&cate=user", strings.TrimSuffix(infos.Conf.Site, "/"), src.ChatID(), src.ID)
+			link := fmt.Sprintf("%s/stream?cid=%v&mid=%d&cate=user", strings.TrimSuffix(infos.Conf.Site, "/"), src.ChatID(), src.ID)
+			links = append(links, link)
 		}
-		http.Redirect(w, r, link, http.StatusFound)
-		return
 	}
+	return links
 }
 
 func handleTime(seconds uint64) string {
@@ -793,16 +815,14 @@ func handleTime(seconds uint64) string {
 }
 
 // sendLink 发送美化后的下载链接消息
-func sendLink(link string) error {
-	if infos.Conf.Password != "" {
-		link += fmt.Sprintf("&key=%s", infos.Conf.Password)
-	}
+func sendLink(m *telegram.NewMessage, link string) error {
 	text := fmt.Sprintf("<b>🔗 链接提取成功</b>\n\n<code>%s</code>\n\n👆 <i>点击上方链接复制，下方按钮下载</i> 👇", html.EscapeString(link))
 	markup := telegram.InlineURL(
 		"🚀 直接下载", fmt.Sprintf("%s&download=true", link),
 	)
 
-	_, err := infos.BotClient.SendMessage(infos.Conf.UserID, text, &telegram.SendOptions{
+	// 发送消息并设置解析模式为 HTML，附带内联键盘
+	_, err := m.Reply(text, &telegram.SendOptions{
 		ParseMode:   "html",
 		ReplyMarkup: markup,
 	})
