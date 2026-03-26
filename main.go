@@ -499,6 +499,9 @@ func handleMess(m *telegram.NewMessage) error {
 	// 如果是用户发送或转发来的、带有图片/文档/视频的消息，直接生成直链
 	if m.IsMedia() && (m.Photo() != nil || m.Document() != nil || m.Video() != nil) {
 		link := fmt.Sprintf("%s/stream?cid=%d&mid=%d&cate=bot", strings.TrimSuffix(infos.Conf.Site, "/"), m.ChatID(), m.ID)
+		if infos.Conf.Password != "" {
+			link += fmt.Sprintf("&key=%s", infos.Conf.Password)
+		}
 		return sendLink(m, link)
 	}
 
@@ -786,13 +789,11 @@ func hackLink(matches [][]string, m *telegram.NewMessage) (links []string) {
 		}
 
 		// 为媒体文件构造下载直链
+		link := fmt.Sprintf("%s/stream?cid=%v&mid=%d&key=%s&cate=user", strings.TrimSuffix(infos.Conf.Site, "/"), src.ChatID(), src.ID, infos.Conf.Password)
 		if infos.Conf.Password != "" {
-			link := fmt.Sprintf("%s/stream?cid=%v&mid=%d&key=%s&cate=user", strings.TrimSuffix(infos.Conf.Site, "/"), src.ChatID(), src.ID, infos.Conf.Password)
-			links = append(links, link)
-		} else {
-			link := fmt.Sprintf("%s/stream?cid=%v&mid=%d&cate=user", strings.TrimSuffix(infos.Conf.Site, "/"), src.ChatID(), src.ID)
-			links = append(links, link)
+			link += fmt.Sprintf("&key=%s", infos.Conf.Password)
 		}
+		links = append(links, link)
 	}
 	return links
 }
