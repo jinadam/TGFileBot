@@ -156,7 +156,8 @@ func (reader *Reader) startFetching() {
 					}
 
 					// Handle cuts for first and last chunks
-					if totalChunks == 1 {
+					switch {
+					case totalChunks == 1:
 						firstCut := reader.Start % reader.ChunkSize
 						lastCut := (reader.End % reader.ChunkSize) + 1
 						if int64(len(content)) > lastCut {
@@ -167,14 +168,14 @@ func (reader *Reader) startFetching() {
 						} else {
 							content = []byte{}
 						}
-					} else if nextIndex == 0 {
+					case nextIndex == 0:
 						firstCut := reader.Start % reader.ChunkSize
 						if int64(len(content)) > firstCut {
 							content = content[firstCut:]
 						} else {
 							content = []byte{}
 						}
-					} else if nextIndex == totalChunks-1 {
+					case nextIndex == totalChunks-1:
 						lastCut := (reader.End % reader.ChunkSize) + 1
 						if int64(len(content)) > lastCut {
 							content = content[:lastCut]
@@ -309,7 +310,7 @@ func (reader *Reader) refresh(version int64) (refreshed bool, waitDuration time.
 			return true, remaining
 		}
 	}
-		
+
 	reader.Refreshing = true
 	reader.Mutex.Unlock()
 
@@ -345,7 +346,7 @@ func (reader *Reader) refresh(version int64) (refreshed bool, waitDuration time.
 	reader.LastRefresh = time.Now()
 	reader.Cond.Broadcast()
 	reader.Mutex.Unlock()
-	
+
 	log.Printf("成功刷新文件引用, DC: %d, 新位置: %+v", newDC, newLoc)
 	// 等待冷却时间让新引用在 Telegram 服务端生效
 	return true, cooldown
@@ -360,7 +361,7 @@ func (reader *Reader) Read(content []byte) (num int, err error) {
 
 	if reader.Pos >= len(reader.CurrBuffer) {
 		select {
-		case data, ok := <-reader.Buffers:
+		case buff, ok := <-reader.Buffers:
 			if !ok {
 				select {
 				case err := <-reader.Errs:
@@ -369,7 +370,7 @@ func (reader *Reader) Read(content []byte) (num int, err error) {
 					return 0, io.EOF
 				}
 			}
-			reader.CurrBuffer = data
+			reader.CurrBuffer = buff
 			reader.Pos = 0
 		case err := <-reader.Errs:
 			return 0, err
